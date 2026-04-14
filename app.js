@@ -482,11 +482,27 @@
     const learnBtn = el.querySelector('[data-role="learn"]');
 
     let rawText = "";
+    let lastLearnedValue = "";
+    let autoLearnTimer = null;
 
-    copyBtn.addEventListener("click", () => copyText(textarea.value, copyBtn));
+    function autoLearn() {
+      if (!rawText) return 0;
+      const current = textarea.value;
+      if (current === lastLearnedValue) return 0;
+      const added = learnFromDiff(rawText, current);
+      lastLearnedValue = current;
+      return added;
+    }
+
+    copyBtn.addEventListener("click", () => {
+      // 복사 = 암묵적 승인 → 자동 학습 저장
+      autoLearn();
+      copyText(textarea.value, copyBtn);
+    });
+
     learnBtn.addEventListener("click", () => {
       if (!rawText) return;
-      const added = learnFromDiff(rawText, textarea.value);
+      const added = autoLearn();
       const original = learnBtn.textContent;
       learnBtn.textContent = added > 0 ? `+${added}개 학습!` : "변경 없음";
       learnBtn.classList.add("is-copied");
@@ -494,6 +510,14 @@
         learnBtn.textContent = original;
         learnBtn.classList.remove("is-copied");
       }, 1800);
+    });
+
+    textarea.addEventListener("input", () => {
+      // 타이핑 멈춘 지 1.5초 후 자동 학습
+      if (autoLearnTimer) clearTimeout(autoLearnTimer);
+      autoLearnTimer = setTimeout(() => {
+        autoLearn();
+      }, 1500);
     });
 
     return {
@@ -510,6 +534,7 @@
         rawText = raw;
         const corrected = applyCorrections(raw);
         textarea.value = corrected;
+        lastLearnedValue = corrected;
         renderFields(fieldsEl, corrected);
       },
       setError(msg) {
