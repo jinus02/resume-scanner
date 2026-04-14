@@ -1,0 +1,3 @@
+*.onnx binary
+*.txt text eol=lf
+models/korean_dict.txt text eol=lf
