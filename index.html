@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="description" content="이력서 첨부 이미지(수상경력·자격증·수료증)에서 텍스트를 추출해 복사하기 쉬운 형태로 보여주는 100% 브라우저 OCR 도구" />
+<meta name="referrer" content="no-referrer" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; img-src 'self' blob: data:; worker-src blob:; connect-src https://cdn.jsdelivr.net; frame-ancestors 'none'; base-uri 'self'; form-action 'none';" />
+<title>이력서 스캐너 — 이미지에서 텍스트 추출</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" integrity="sha384-uGEvnSEpW2nM9xJFsrxrwakwrk9QdDTQIBJh0hVMu90OaVyMAMpAK1rIn0/Kh1/k" crossorigin="anonymous" />
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<header class="hero">
+  <h1>이력서 스캐너</h1>
+  <p>수상경력·자격증·수료증 이미지를 올리면, 그 안의 글자를 뽑아 복사하기 쉽게 정리해드립니다. 모든 처리는 <strong>브라우저 안</strong>에서만 일어나며, 어떤 서버로도 전송되지 않습니다.</p>
+</header>
+
+<main>
+  <section id="dropZone" class="drop-zone" aria-label="이미지 업로드 영역">
+    <div class="drop-inner">
+      <div class="drop-icon" aria-hidden="true">📄</div>
+      <p class="drop-title">여기에 이미지를 끌어다 놓으세요</p>
+      <p class="drop-sub">또는</p>
+      <label class="file-button">
+        파일 선택
+        <input id="fileInput" type="file" accept="image/*" multiple hidden />
+      </label>
+      <p class="drop-hint">PNG · JPG · WEBP · 여러 장 동시 업로드 가능</p>
+    </div>
+  </section>
+
+  <section id="results" class="results" aria-live="polite"></section>
+</main>
+
+<footer>
+  <p>© 이력서 스캐너 · 100% 클라이언트 OCR · <a href="https://github.com/naptha/tesseract.js" target="_blank" rel="noopener noreferrer">Tesseract.js</a> 기반</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js" integrity="sha384-GJqSu7vueQ9qN0E9yLPb3Wtpd7OrgK8KmYzC8T1IysG1bcvxvIO4qtYR/D3A991F" crossorigin="anonymous"></script>
+<script src="./app.js" defer></script>
+</body>
+</html>
