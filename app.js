@@ -357,11 +357,15 @@
       if (typeof Tesseract === "undefined") {
         throw new Error("Tesseract.js 로드 실패");
       }
+      // tessdata_best: fast 대비 파일 크기↑ 정확도↑ (한국어 수료증/명함 에서 차이 큼)
       const w = await Tesseract.createWorker("kor+eng", 1, {
+        langPath: "https://tessdata.projectnaptha.com/4.0.0_best",
         logger: (m) => currentLogger && currentLogger(m),
       });
       await w.setParameters({
         preserve_interword_spaces: "1",
+        user_defined_dpi: "300",
+        tessedit_pageseg_mode: "4",
       });
       return w;
     })();
