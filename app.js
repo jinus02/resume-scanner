@@ -11,6 +11,12 @@
   const results = document.getElementById("results");
   const learnedBadge = document.getElementById("learnedBadge");
 
+  // PDF.js worker 경로 설정 (pdf.min.js 와 동일 버전)
+  if (typeof pdfjsLib !== "undefined") {
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+  }
+
   const STORAGE_KEY = "resume_scanner_corrections_v1";
   const MAX_CORRECTIONS = 500;
 
@@ -135,6 +141,23 @@
     });
   }
 
+  function applyOcrFilters(canvas) {
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imgData.data;
+    const contrast = 1.35;
+    for (let p = 0; p < data.length; p += 4) {
+      const gray = data[p] * 0.299 + data[p + 1] * 0.587 + data[p + 2] * 0.114;
+      const adjusted = (gray - 128) * contrast + 128;
+      const v = adjusted < 0 ? 0 : adjusted > 255 ? 255 : adjusted;
+      data[p] = v;
+      data[p + 1] = v;
+      data[p + 2] = v;
+    }
+    ctx.putImageData(imgData, 0, 0);
+    return canvas;
+  }
+
   async function preprocessImage(file) {
     const img = await loadImage(file);
     const maxEdge = Math.max(img.width, img.height);
@@ -150,20 +173,103 @@
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return applyOcrFilters(canvas);
+  }
 
-    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const data = imgData.data;
-    const contrast = 1.35;
-    for (let p = 0; p < data.length; p += 4) {
-      const gray = data[p] * 0.299 + data[p + 1] * 0.587 + data[p + 2] * 0.114;
-      const adjusted = (gray - 128) * contrast + 128;
-      const v = adjusted < 0 ? 0 : adjusted > 255 ? 255 : adjusted;
-      data[p] = v;
-      data[p + 1] = v;
-      data[p + 2] = v;
-    }
-    ctx.putImageData(imgData, 0, 0);
+  // ── PDF 처리 ─────────────────────────────────────────────────
+  async function renderPdfPage(page, scale = 2) {
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    // 흰 배경으로 채워 투명 PDF 페이지 대비
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport }).promise;
     return canvas;
+  }
+
+  function extractPageTextLayer(textContent) {
+    // PDF.js textContent.items[] 를 공간 정보를 최대한 살려 문자열로 합침
+    const lines = [];
+    let currentLine = [];
+    let currentY = null;
+    for (const item of textContent.items) {
+      if (!item || typeof item.str !== "string") continue;
+      const y = item.transform ? item.transform[5] : 0;
+      if (currentY === null || Math.abs(y - currentY) > 2) {
+        if (currentLine.length) lines.push(currentLine.join(" "));
+        currentLine = [];
+        currentY = y;
+      }
+      if (item.str.trim()) currentLine.push(item.str);
+    }
+    if (currentLine.length) lines.push(currentLine.join(" "));
+    return lines.join("\n").trim();
+  }
+
+  async function processPdf(file, card) {
+    if (typeof pdfjsLib === "undefined") {
+      throw new Error("PDF.js 로드 실패");
+    }
+    card.setStatus("PDF 로딩 중…");
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    const pageCount = pdf.numPages;
+    const parts = [];
+
+    for (let p = 1; p <= pageCount; p++) {
+      card.setProgress((p - 1) / pageCount);
+      const page = await pdf.getPage(p);
+      let pageText = "";
+
+      try {
+        card.setStatus(`PDF ${p}/${pageCount} — 텍스트 레이어 추출`);
+        const textContent = await page.getTextContent();
+        pageText = extractPageTextLayer(textContent);
+      } catch {
+        pageText = "";
+      }
+
+      if (pageText.replace(/\s/g, "").length < 20) {
+        // 스캔본 or 이미지 PDF → OCR 폴백
+        card.setStatus(`PDF ${p}/${pageCount} — OCR 처리 중…`);
+        const rawCanvas = await renderPdfPage(page, 2);
+        applyOcrFilters(rawCanvas);
+        const worker = await getWorker();
+        const { data } = await worker.recognize(rawCanvas);
+        pageText = (data && data.text) || "";
+      }
+
+      parts.push(`━━━ 페이지 ${p} / ${pageCount} ━━━\n${pageText.trim()}`);
+      page.cleanup && page.cleanup();
+    }
+
+    await pdf.destroy();
+    return parts.join("\n\n");
+  }
+
+  async function makePdfPreview(file) {
+    // 첫 페이지를 미리보기용 작은 이미지로 렌더링
+    try {
+      const buf = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+      const page = await pdf.getPage(1);
+      const viewport = page.getViewport({ scale: 0.6 });
+      const canvas = document.createElement("canvas");
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      const url = canvas.toDataURL("image/png");
+      await pdf.destroy();
+      return url;
+    } catch {
+      return null;
+    }
   }
 
   function normalizeOcrText(text) {
@@ -246,25 +352,42 @@
     fileInput.value = "";
   });
 
+  function isSupportedFile(f) {
+    return f.type.startsWith("image/") || f.type === "application/pdf" || /\.pdf$/i.test(f.name);
+  }
+
   async function handleFiles(files) {
-    const images = files.filter((f) => f.type.startsWith("image/"));
-    if (!images.length) return;
-    for (const file of images) {
-      const card = createCard(file);
+    const accepted = files.filter(isSupportedFile);
+    if (!accepted.length) return;
+    for (const file of accepted) {
+      const card = await createCard(file);
       results.prepend(card.el);
       try {
-        await runOcr(file, card);
+        await processFile(file, card);
       } catch (err) {
         card.setError(err && err.message ? err.message : String(err));
       }
     }
   }
 
-  function createCard(file) {
+  async function processFile(file, card) {
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+    if (isPdf) {
+      const raw = normalizeOcrText(await processPdf(file, card));
+      card.setProgress(1);
+      card.setStatus("완료", "done");
+      card.setText(raw);
+    } else {
+      await runOcr(file, card);
+    }
+  }
+
+  async function createCard(file) {
     const el = document.createElement("article");
     el.className = "result-card";
 
-    const previewUrl = URL.createObjectURL(file);
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+    const previewUrl = isPdf ? await makePdfPreview(file) : URL.createObjectURL(file);
 
     el.innerHTML = `
       <div class="result-head">
@@ -295,8 +418,16 @@
 
     el.querySelector(".result-title").textContent = file.name;
     const previewImg = el.querySelector(".preview img");
-    previewImg.src = previewUrl;
-    previewImg.addEventListener("load", () => URL.revokeObjectURL(previewUrl), { once: true });
+    if (previewUrl) {
+      previewImg.src = previewUrl;
+      if (!isPdf) {
+        previewImg.addEventListener("load", () => URL.revokeObjectURL(previewUrl), { once: true });
+      }
+    } else {
+      previewImg.alt = "PDF";
+      previewImg.style.display = "none";
+      el.querySelector(".preview").textContent = "📄 PDF";
+    }
 
     const status = el.querySelector(".status");
     const bar = el.querySelector(".progress-bar");
