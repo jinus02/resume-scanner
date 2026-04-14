@@ -141,6 +141,46 @@
     });
   }
 
+  // Unsharp mask: 3x3 박스 블러로 저주파를 만든 뒤, 원본과의 차이를 증폭해 더함
+  // → 살짝 흐린 한글 텍스트의 획 경계가 또렷해져서 Otsu 가 더 정확하게 동작함
+  function applyUnsharpMask(canvas, amount = 0.8) {
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const w = canvas.width;
+    const h = canvas.height;
+    const src = ctx.getImageData(0, 0, w, h);
+    const data = src.data;
+
+    // RGB 각 채널을 그레이스케일로 먼저 변환 (R 채널만 써도 동일)
+    const gray = new Uint8ClampedArray(w * h);
+    for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+      gray[p] = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) | 0;
+    }
+
+    // 3x3 박스 블러
+    const blur = new Uint8ClampedArray(w * h);
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const idx = y * w + x;
+        let sum = 0;
+        sum += gray[idx - w - 1] + gray[idx - w] + gray[idx - w + 1];
+        sum += gray[idx - 1] + gray[idx] + gray[idx + 1];
+        sum += gray[idx + w - 1] + gray[idx + w] + gray[idx + w + 1];
+        blur[idx] = (sum / 9) | 0;
+      }
+    }
+
+    // sharpened = gray + amount * (gray - blur)
+    for (let p = 0, i = 0; p < gray.length; p++, i += 4) {
+      const sharp = gray[p] + amount * (gray[p] - blur[p]);
+      const v = sharp < 0 ? 0 : sharp > 255 ? 255 : sharp;
+      data[i] = v;
+      data[i + 1] = v;
+      data[i + 2] = v;
+    }
+    ctx.putImageData(src, 0, 0);
+    return canvas;
+  }
+
   // Otsu 이진화: 히스토그램 기반으로 최적 임계값을 찾아 순수 흑백으로 변환
   // → 한글 자소 경계가 살아나 Tesseract 인식률이 크게 개선됨
   function otsuThreshold(grayHist, total) {
@@ -222,6 +262,8 @@
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    // 1) Unsharp mask (경계 또렷하게) → 2) Otsu 이진화
+    applyUnsharpMask(canvas, 0.8);
     return applyOcrFilters(canvas);
   }
 
@@ -286,10 +328,9 @@
         card.setStatus(`PDF ${p}/${pageCount} — OCR 처리 중…`);
         // 한국어 인식률을 위해 렌더 배율을 3배로 (= 약 216 DPI)
         const rawCanvas = await renderPdfPage(page, 3);
+        applyUnsharpMask(rawCanvas, 0.8);
         applyOcrFilters(rawCanvas);
-        const worker = await getWorker();
-        const { data } = await worker.recognize(rawCanvas);
-        pageText = (data && data.text) || "";
+        pageText = await recognizeDualPass(rawCanvas, card);
       }
 
       parts.push(`━━━ 페이지 ${p} / ${pageCount} ━━━\n${pageText.trim()}`);
@@ -400,6 +441,7 @@
   // ── Tesseract worker (전역 재사용) ───────────────────────────
   let currentLogger = null;
   let workerPromise = null;
+  const MIN_WORD_CONFIDENCE = 60; // 60 미만 단어는 OCR 쓰레기로 간주하고 drop
 
   async function getWorker() {
     if (workerPromise) return workerPromise;
@@ -415,8 +457,6 @@
       await w.setParameters({
         preserve_interword_spaces: "1",
         user_defined_dpi: "300",
-        // PSM 6 = uniform block of text. 수료증·자격증처럼 레이아웃이 일정한
-        // 문서에서 PSM 4(single column)보다 일관되게 높은 한국어 정확도.
         tessedit_pageseg_mode: "6",
         // OEM 1 = LSTM only. 레거시 엔진이 섞이면 한글이 깨지므로 LSTM 전용.
         tessedit_ocr_engine_mode: "1",
@@ -424,6 +464,64 @@
       return w;
     })();
     return workerPromise;
+  }
+
+  // data.words 배열을 confidence 필터링 후 라인 단위로 재조립
+  function buildTextFromWords(result) {
+    const words = (result && result.words) || [];
+    if (!words.length) return (result && result.text) || "";
+    // 블록/라인 id 기반으로 그룹화
+    const linesMap = new Map();
+    for (const word of words) {
+      if (!word || typeof word.text !== "string") continue;
+      if (typeof word.confidence === "number" && word.confidence < MIN_WORD_CONFIDENCE) continue;
+      const t = word.text.trim();
+      if (!t) continue;
+      // line.baseline 또는 line_num 으로 그룹 키 구성 — 없으면 bbox.y0 을 버킷화
+      const bbox = word.bbox || {};
+      const key = word.line
+        ? `${word.line.baseline ? word.line.baseline.y0 : ""}_${word.line.bbox ? word.line.bbox.y0 : ""}`
+        : Math.round((bbox.y0 || 0) / 10);
+      if (!linesMap.has(key)) linesMap.set(key, []);
+      linesMap.get(key).push({ text: t, x: bbox.x0 || 0 });
+    }
+    const lines = [];
+    for (const arr of linesMap.values()) {
+      arr.sort((a, b) => a.x - b.x);
+      lines.push(arr.map((w) => w.text).join(" "));
+    }
+    return lines.join("\n");
+  }
+
+  // "진짜 단어 밀도" 점수: 한글 2자+ / 영숫자 3자+ 토큰 수
+  function realWordScore(text) {
+    if (!text) return 0;
+    const tokens = text.split(/\s+/).filter(Boolean);
+    let score = 0;
+    for (const t of tokens) {
+      if (/[가-힣]{2,}/.test(t)) score += 2; // 한글에 가중치
+      else if (/[A-Za-z0-9]{3,}/.test(t)) score += 1;
+    }
+    return score;
+  }
+
+  // Dual-pass OCR: PSM 6 + PSM 4 를 돌려 "진짜 단어 점수"가 높은 쪽 채택
+  async function recognizeDualPass(canvas, card) {
+    const worker = await getWorker();
+    card.setStatus("텍스트 인식 중 (1/2)…");
+    const r1 = await worker.recognize(canvas);
+    const text1 = buildTextFromWords(r1.data);
+    const score1 = realWordScore(text1);
+
+    card.setStatus("텍스트 인식 중 (2/2)…");
+    await worker.setParameters({ tessedit_pageseg_mode: "4" });
+    const r2 = await worker.recognize(canvas);
+    const text2 = buildTextFromWords(r2.data);
+    const score2 = realWordScore(text2);
+    // 다음 호출을 위해 기본 PSM 6 복원
+    await worker.setParameters({ tessedit_pageseg_mode: "6" });
+
+    return score2 > score1 ? text2 : text1;
   }
 
   // ── 드래그 / 파일 입력 ──────────────────────────────────────
@@ -653,21 +751,19 @@
 
     currentLogger = (m) => {
       if (m.status === "recognizing text" && typeof m.progress === "number") {
-        card.setProgress(m.progress);
-        card.setStatus("텍스트 인식 중…");
+        card.setProgress(m.progress * 0.5); // 두 번 돌리므로 50% 분할
       } else if (m.status) {
         card.setStatus(translateStatus(m.status));
       }
     };
 
     card.setStatus("엔진 준비 중…");
-    const worker = await getWorker();
-    const { data } = await worker.recognize(canvas);
+    const bestText = await recognizeDualPass(canvas, card);
     currentLogger = null;
 
     card.setProgress(1);
     card.setStatus("완료", "done");
-    const raw = denoiseOcrText(normalizeOcrText((data && data.text) || ""));
+    const raw = denoiseOcrText(normalizeOcrText(bestText));
     card.setText(raw);
   }
 
