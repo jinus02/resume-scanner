@@ -281,6 +281,51 @@
       .trim();
   }
 
+  // ── OCR 노이즈 필터 (관련 없는 라인 제거) ────────────────────
+  function stripNoiseTokens(line) {
+    const tokens = line.split(/\s+/).filter(Boolean);
+    const isNoise = (t) => t.length === 1 || /^[^가-힣A-Za-z0-9]+$/.test(t);
+    while (tokens.length && isNoise(tokens[0])) tokens.shift();
+    while (tokens.length && isNoise(tokens[tokens.length - 1])) tokens.pop();
+    return tokens.join(" ");
+  }
+
+  function denoiseOcrText(text) {
+    const lines = text.split("\n");
+    const out = [];
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line) {
+        out.push("");
+        continue;
+      }
+      // 페이지 구분자 보존
+      if (/^━/.test(line) || /^페이지\s*\d+\s*\/\s*\d+$/.test(line)) {
+        out.push(line);
+        continue;
+      }
+      const cleaned = stripNoiseTokens(line);
+      if (!cleaned) continue;
+      // "진짜 단어" 하나 이상 필수
+      const hasRealWord = /[가-힣]{2,}|[A-Za-z0-9]{3,}/.test(cleaned);
+      if (!hasRealWord) continue;
+      // 의미 있는 문자 비율 체크
+      const meaningful = (cleaned.match(/[가-힣A-Za-z0-9]/g) || []).length;
+      const total = cleaned.replace(/\s/g, "").length;
+      if (total === 0 || meaningful / total < 0.4) continue;
+      out.push(cleaned);
+    }
+    // 연속 빈 줄 접기 + 양끝 빈 줄 제거
+    const collapsed = [];
+    for (const l of out) {
+      if (l === "" && collapsed[collapsed.length - 1] === "") continue;
+      collapsed.push(l);
+    }
+    while (collapsed.length && collapsed[0] === "") collapsed.shift();
+    while (collapsed.length && collapsed[collapsed.length - 1] === "") collapsed.pop();
+    return collapsed.join("\n");
+  }
+
   // ── 필드 추출 정규식 ─────────────────────────────────────────
   const FIELD_PATTERNS = [
     { key: "발급일", re: /(?:발급|취득|수여|이수|수료|인증|등록)\s*(?:일자|일|날짜)?\s*[:：]?\s*(\d{4}[.\-\/년\s]\s*\d{1,2}[.\-\/월\s]\s*\d{1,2}[일]?)/ },
@@ -373,7 +418,7 @@
   async function processFile(file, card) {
     const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
     if (isPdf) {
-      const raw = normalizeOcrText(await processPdf(file, card));
+      const raw = denoiseOcrText(normalizeOcrText(await processPdf(file, card)));
       card.setProgress(1);
       card.setStatus("완료", "done");
       card.setText(raw);
@@ -539,7 +584,7 @@
 
     card.setProgress(1);
     card.setStatus("완료", "done");
-    const raw = normalizeOcrText((data && data.text) || "");
+    const raw = denoiseOcrText(normalizeOcrText((data && data.text) || ""));
     card.setText(raw);
   }
 
