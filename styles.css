@@ -45,6 +45,17 @@ html, body {
   max-width: 620px;
 }
 
+.learned-badge {
+  display: inline-block;
+  margin-top: 16px;
+  padding: 6px 14px;
+  background: #eef3ff;
+  color: var(--accent);
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 main {
   max-width: 880px;
   margin: 0 auto;
@@ -182,6 +193,48 @@ main {
   position: relative;
 }
 
+.text-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+  z-index: 1;
+}
+
+.learn-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--text-sub);
+  transition: all 120ms ease;
+  font-family: inherit;
+}
+
+.learn-btn:hover {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.learn-btn.is-copied {
+  background: var(--success);
+  border-color: var(--success);
+  color: #fff;
+}
+
+.hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-sub);
+  margin-left: 4px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 .text-block textarea {
   width: 100%;
   min-height: 120px;
@@ -203,9 +256,6 @@ main {
 }
 
 .copy-btn {
-  position: absolute;
-  top: 8px;
-  right: 8px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -215,6 +265,11 @@ main {
   cursor: pointer;
   color: var(--text-sub);
   transition: all 120ms ease;
+  font-family: inherit;
+}
+
+.text-block textarea {
+  padding-top: 44px;
 }
 
 .copy-btn:hover {
