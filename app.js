@@ -141,15 +141,63 @@
     });
   }
 
+  // Otsu 이진화: 히스토그램 기반으로 최적 임계값을 찾아 순수 흑백으로 변환
+  // → 한글 자소 경계가 살아나 Tesseract 인식률이 크게 개선됨
+  function otsuThreshold(grayHist, total) {
+    let sum = 0;
+    for (let t = 0; t < 256; t++) sum += t * grayHist[t];
+    let sumB = 0;
+    let wB = 0;
+    let maxVar = 0;
+    let threshold = 127;
+    for (let t = 0; t < 256; t++) {
+      wB += grayHist[t];
+      if (wB === 0) continue;
+      const wF = total - wB;
+      if (wF === 0) break;
+      sumB += t * grayHist[t];
+      const mB = sumB / wB;
+      const mF = (sum - sumB) / wF;
+      const v = wB * wF * (mB - mF) * (mB - mF);
+      if (v > maxVar) {
+        maxVar = v;
+        threshold = t;
+      }
+    }
+    return threshold;
+  }
+
   function applyOcrFilters(canvas) {
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imgData.data;
-    const contrast = 1.35;
-    for (let p = 0; p < data.length; p += 4) {
-      const gray = data[p] * 0.299 + data[p + 1] * 0.587 + data[p + 2] * 0.114;
-      const adjusted = (gray - 128) * contrast + 128;
-      const v = adjusted < 0 ? 0 : adjusted > 255 ? 255 : adjusted;
+
+    // 1단계: 그레이스케일 + 히스토그램 수집
+    const hist = new Uint32Array(256);
+    const grayBuf = new Uint8ClampedArray(data.length / 4);
+    for (let p = 0, g = 0; p < data.length; p += 4, g++) {
+      const gray = (data[p] * 0.299 + data[p + 1] * 0.587 + data[p + 2] * 0.114) | 0;
+      grayBuf[g] = gray;
+      hist[gray]++;
+    }
+
+    // 2단계: Otsu 이진화 (순수 흑백으로 분리)
+    const threshold = otsuThreshold(hist, grayBuf.length);
+    // 배경이 텍스트보다 밝은 문서에서만 이진화 — 평균 밝기로 판별
+    let meanBright = 0;
+    for (let i = 0; i < grayBuf.length; i++) meanBright += grayBuf[i];
+    meanBright /= grayBuf.length;
+    const useBinarize = meanBright > 120; // 일반 문서는 밝은 배경
+
+    for (let p = 0, g = 0; p < data.length; p += 4, g++) {
+      let v;
+      if (useBinarize) {
+        v = grayBuf[g] > threshold ? 255 : 0;
+      } else {
+        // 어두운 배경일 땐 기존 대비 향상만
+        const adjusted = (grayBuf[g] - 128) * 1.4 + 128;
+        v = adjusted < 0 ? 0 : adjusted > 255 ? 255 : adjusted;
+      }
       data[p] = v;
       data[p + 1] = v;
       data[p + 2] = v;
@@ -162,9 +210,10 @@
     const img = await loadImage(file);
     const maxEdge = Math.max(img.width, img.height);
     const minEdge = Math.min(img.width, img.height);
+    // 한국어는 x-height ≥ 40px 일 때 인식률 최고 → 기준을 2400px 로 상향
     let scale = 1;
-    if (minEdge < 800) scale = Math.min(3, 1600 / minEdge);
-    else if (maxEdge > 3200) scale = 3200 / maxEdge;
+    if (minEdge < 1200) scale = Math.min(3.5, 2400 / minEdge);
+    else if (maxEdge > 4000) scale = 4000 / maxEdge;
 
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(img.width * scale);
@@ -235,7 +284,8 @@
       if (pageText.replace(/\s/g, "").length < 20) {
         // 스캔본 or 이미지 PDF → OCR 폴백
         card.setStatus(`PDF ${p}/${pageCount} — OCR 처리 중…`);
-        const rawCanvas = await renderPdfPage(page, 2);
+        // 한국어 인식률을 위해 렌더 배율을 3배로 (= 약 216 DPI)
+        const rawCanvas = await renderPdfPage(page, 3);
         applyOcrFilters(rawCanvas);
         const worker = await getWorker();
         const { data } = await worker.recognize(rawCanvas);
@@ -365,7 +415,11 @@
       await w.setParameters({
         preserve_interword_spaces: "1",
         user_defined_dpi: "300",
-        tessedit_pageseg_mode: "4",
+        // PSM 6 = uniform block of text. 수료증·자격증처럼 레이아웃이 일정한
+        // 문서에서 PSM 4(single column)보다 일관되게 높은 한국어 정확도.
+        tessedit_pageseg_mode: "6",
+        // OEM 1 = LSTM only. 레거시 엔진이 섞이면 한글이 깨지므로 LSTM 전용.
+        tessedit_ocr_engine_mode: "1",
       });
       return w;
     })();
