@@ -1,3 +1,5 @@
+import * as pdfjsLib from "./vendor/pdfjs/pdf.min.mjs";
+
 /* 이력서 스캐너 — 100% 클라이언트 OCR + 학습 루프
  * - 이미지 전처리 (업스케일·그레이스케일·대비)로 인식률 향상
  * - 사용자가 교정한 결과를 localStorage 에 누적 → 다음 OCR 자동 적용
@@ -14,7 +16,7 @@
   // PDF.js worker 경로 설정 (pdf.min.js 와 동일 버전)
   if (typeof pdfjsLib !== "undefined") {
     pdfjsLib.GlobalWorkerOptions.workerSrc =
-      "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+      new URL("./vendor/pdfjs/pdf.worker.min.mjs", import.meta.url).href;
   }
 
   const STORAGE_KEY = "resume_scanner_corrections_v1";
@@ -306,7 +308,8 @@
     }
     card.setStatus("PDF 로딩 중…");
     const buf = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    const loadingTask = pdfjsLib.getDocument({ data: buf, isEvalSupported: false });
+    const pdf = await loadingTask.promise;
     const pageCount = pdf.numPages;
     const parts = [];
 
@@ -337,7 +340,7 @@
       page.cleanup && page.cleanup();
     }
 
-    await pdf.destroy();
+    await loadingTask.destroy();
     return parts.join("\n\n");
   }
 
@@ -345,7 +348,8 @@
     // 첫 페이지를 미리보기용 작은 이미지로 렌더링
     try {
       const buf = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+      const loadingTask = pdfjsLib.getDocument({ data: buf, isEvalSupported: false });
+      const pdf = await loadingTask.promise;
       const page = await pdf.getPage(1);
       const viewport = page.getViewport({ scale: 0.6 });
       const canvas = document.createElement("canvas");
@@ -356,7 +360,7 @@
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       await page.render({ canvasContext: ctx, viewport }).promise;
       const url = canvas.toDataURL("image/png");
-      await pdf.destroy();
+      await loadingTask.destroy();
       return url;
     } catch {
       return null;
